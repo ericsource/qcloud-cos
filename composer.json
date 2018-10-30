@@ -1,0 +1,27 @@
+{
+    "name": "ericsource/qcloud-cos",
+    "description": "Qcloud Temp Key.",
+    "authors": [
+        {
+            "name": "eric.cai",
+            "email": "ericenter@qq.com",
+            "homepage": "https://github.com/ericsource"
+        }
+    ],
+    "license": "MIT",
+    "require": {
+        "php": ">=7.0.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "EricSource\\QcloudCos\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "EricSource\\QcloudCos\\QcloudCosProvider"
+            ]
+        }
+    }
+}
