@@ -1,31 +1,55 @@
 <?php
 namespace Ericsource\QcloudCos;
-use Illuminate\Session\SessionManager;
-use Illuminate\Config\Repository;
+
+use GuzzleHttp\Client;
+use Illuminate\Support\Facades\Cache;
 
 class Auth
 {
     private $secretId;
     private $secretKey;
+    private $config;
+    private $cosUrl;
 
-    public function __construct($secretId, $secretKey)
+    const QCLOUD_URL = "https://sts.api.qcloud.com/v2/index.php";
+    const QCLOUD_DOMAIN = "sts.api.qcloud.com";
+    const DURATION_SECONDS = 7200;
+
+    const CACHE_TEMP_KEY = "qcloud_cos_tempkey";
+
+    public function __construct($secretId="", $secretKey="")
     {
-        $this->secretId = $secretId;
-        $this->secretKey = $secretKey;
+        $this->config = config('qcloud-cos');
+        $this->secretId = $secretId ? $secretId : $this->config['SecretId'];
+        $this->secretKey = $secretKey ? $secretKey : $this->config['SecretKey'];
+
+        $this->cosUrl = "https://". $this->config['Bucket'] .".cos.". $this->config['Region'] .".myqcloud.com";
     }
 
-    public function getAuth() {
-//        $keys = $this->getTempKeys();
-//        $pathname = "txkt/".date("Ymd");
-//        $Authorization = $this->getAuthorization($keys, "post", "/");
-//        $data = array(
-//            'Authorization' => $Authorization,
-//            'XCosSecurityToken' => $keys['credentials']['sessionToken'],
-//        );
-//        $data['prefix'] = $pathname;
-//        $data['bucket'] = $config['Bucket'];
-//        $data['region'] = $config['Region'];
-        $data = ["aa"];
+    public function getAuth()
+    {
+        // 缓存的临时密钥
+        //Cache::forget(self::CACHE_TEMP_KEY);
+        $keys = Cache::remember(self::CACHE_TEMP_KEY, intval((self::DURATION_SECONDS - 60*5)/60), function() {
+            return $this->getTempKeys();
+        });
+        if( !$keys ) {
+            abort(1001, "获取上传Token失败", ["abort" => "getTempKey获取失败， 请检查qcloud-cos config"]);
+        }
+        if( $keys['expiredTime'] <= time() ) {
+            Cache::forget(self::CACHE_TEMP_KEY);
+            abort(1001, "获取上传Token失败", ["abort" => $keys]);
+        }
+
+        $Authorization = $this->getAuthorization($keys, "post", "/");
+
+        $data = array(
+            'Authorization' => $Authorization,
+            'XCosSecurityToken' => $keys['credentials']['sessionToken'],
+        );
+        $data['bucket'] = $this->config['Bucket'];
+        $data['region'] = $this->config['Region'];
+
         return $data;
     }
 
@@ -42,26 +66,7 @@ class Auth
         $method = strtolower($method ? $method : 'get');
         $pathname = $pathname ? $pathname : '/';
         substr($pathname, 0, 1) != '/' && ($pathname = '/' . $pathname);
-        // 工具方法
-        function getObjectKeys($obj)
-        {
-            $list = array_keys($obj);
-            sort($list);
-            return $list;
-        }
-        function obj2str($obj)
-        {
-            $list = array();
-            $keyList = getObjectKeys($obj);
-            $len = count($keyList);
-            for ($i = 0; $i < $len; $i++) {
-                $key = $keyList[$i];
-                $val = isset($obj[$key]) ? $obj[$key] : '';
-                $key = strtolower($key);
-                $list[] = rawurlencode($key) . '=' . rawurlencode($val);
-            }
-            return implode('&', $list);
-        }
+
         // 签名有效起止时间
         $now = time() - 1;
         $expired = $now + 600; // 签名过期时刻，600 秒后
@@ -70,13 +75,14 @@ class Auth
         $qAk = $SecretId;
         $qSignTime = $now . ';' . $expired;
         $qKeyTime = $now . ';' . $expired;
-        $qHeaderList = strtolower(implode(';', getObjectKeys($headers)));
-        $qUrlParamList = strtolower(implode(';', getObjectKeys($query)));
+        $qHeaderList = strtolower(implode(';', self::getObjectKeys($headers)));
+        $qUrlParamList = strtolower(implode(';', self::getObjectKeys($query)));
+
         // 签名算法说明文档：https://www.qcloud.com/document/product/436/7778
         // 步骤一：计算 SignKey
         $signKey = hash_hmac("sha1", $qKeyTime, $SecretKey);
         // 步骤二：构成 FormatString
-        $formatString = implode("\n", array(strtolower($method), $pathname, obj2str($query), obj2str($headers), ''));
+        $formatString = implode("\n", array(strtolower($method), $pathname, self::obj2str($query), self::obj2str($headers), ''));
         header('x-test-method', $method);
         header('x-test-pathname', $pathname);
         // 步骤三：计算 StringToSign
@@ -97,10 +103,13 @@ class Auth
     }
 
     // 获取临时密钥
-    protected function getTempKeys() {
-        $config = self::$config;
-        $ShortBucketName = substr($config['Bucket'],0, strripos($config['Bucket'], '-'));
-        $AppId = substr($config['Bucket'], 1 + strripos($config['Bucket'], '-'));
+    protected function getTempKeys()
+    {
+        $ShortBucketName = substr($this->config['Bucket'],0, strripos($this->config['Bucket'], '-'));
+        $AppId = substr($this->config['Bucket'], 1 + strripos($this->config['Bucket'], '-'));
+
+        $baseResource = $this->config['Region'] . ':uid/' . $AppId . ':prefix//' . $AppId . '/' . $ShortBucketName . '/';
+
         $policy = array(
             'version'=> '2.0',
             'statement'=> array(
@@ -158,12 +167,13 @@ class Auth
                     'effect'=> 'allow',
                     'principal'=> array('qcs'=> array('*')),
                     'resource'=> array(
-                        'qcs::cos:' . $config['Region'] . ':uid/' . $AppId . ':prefix//' . $AppId . '/' . $ShortBucketName . '/',
-                        'qcs::cos:' . $config['Region'] . ':uid/' . $AppId . ':prefix//' . $AppId . '/' . $ShortBucketName . '/' . self::resourceUrlEncode($config['AllowPrefix'])
+                        'qcs::cos:' . $baseResource,
+                        'qcs::cos:' . $baseResource . self::resourceUrlEncode($this->config['AllowPrefix'])
                     )
                 )
             )
         );
+
         $policyStr = str_replace('\\/', '/', json_encode($policy));
         $Action = 'GetFederationToken';
         $Nonce = rand(10000, 20000);
@@ -173,30 +183,28 @@ class Auth
             'Action'=> $Action,
             'Nonce'=> $Nonce,
             'Region'=> '',
-            'SecretId'=> $config['SecretId'],
+            'SecretId'=> $this->secretId,
             'Timestamp'=> $Timestamp,
             'durationSeconds'=> 7200,
             'name'=> 'cos',
             'policy'=> urlencode($policyStr)
         );
-        $params['Signature'] = urlencode(self::getSignature($params, $config['SecretKey'], $Method));
-        $url = $config['Url'] . '?' . self::json2str($params);
-        $ch = curl_init($url);
-        $config['Proxy'] && curl_setopt($ch, CURLOPT_PROXY, $config['Proxy']);
-        curl_setopt($ch, CURLOPT_HEADER, 0);
-        curl_setopt($ch,CURLOPT_SSL_VERIFYPEER,0);
-        curl_setopt($ch,CURLOPT_SSL_VERIFYHOST,0);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-        $result = curl_exec($ch);
-        if(curl_errno($ch)) $result = curl_error($ch);
-        curl_close($ch);
-        $result = json_decode($result, 1);
-        if (isset($result['data'])) $result = $result['data'];
-        return $result;
+        $params['Signature'] = urlencode(self::getSignature($params, $this->secretKey, $Method));
+
+        //请求url
+        $url = self::QCLOUD_URL . '?' . self::json2str($params);
+
+        $http = new Client();
+        $response = $http->get($url);
+        $content = $response->getBody()->getContents();
+        $result = json_decode($content, true);
+
+        return array_get($result, "data", false);
     }
 
     // 计算临时密钥用的签名
-    protected static function resourceUrlEncode($str) {
+    protected static function resourceUrlEncode($str)
+    {
         $str = rawurlencode($str);
         //特殊处理字符 !()~
         $str = str_replace('%2F', '/', $str);
@@ -209,9 +217,9 @@ class Auth
     }
 
     // 计算临时密钥用的签名
-    protected static function getSignature($opt, $key, $method) {
-        $config = self::$config;
-        $formatString = $method . $config['Domain'] . '/v2/index.php?' . self::json2str($opt);
+    protected static function getSignature($opt, $key, $method)
+    {
+        $formatString = $method . self::QCLOUD_DOMAIN . '/v2/index.php?' . self::json2str($opt);
         $formatString = urldecode($formatString);
         $sign = hash_hmac('sha1', $formatString, $key);
         $sign = base64_encode(hex2bin($sign));
@@ -219,12 +227,34 @@ class Auth
     }
 
     // obj 转 query string
-    protected static function json2str($obj) {
+    protected static function json2str($obj)
+    {
         ksort($obj);
         $arr = array();
         foreach ($obj as $key => $val) {
             array_push($arr, $key . '=' . $val);
         }
         return join('&', $arr);
+    }
+
+    // 工具方法
+    protected static function getObjectKeys($obj)
+    {
+        $list = array_keys($obj);
+        sort($list);
+        return $list;
+    }
+    protected static function obj2str($obj)
+    {
+        $list = array();
+        $keyList = self::getObjectKeys($obj);
+        $len = count($keyList);
+        for ($i = 0; $i < $len; $i++) {
+            $key = $keyList[$i];
+            $val = isset($obj[$key]) ? $obj[$key] : '';
+            $key = strtolower($key);
+            $list[] = rawurlencode($key) . '=' . rawurlencode($val);
+        }
+        return implode('&', $list);
     }
 }
