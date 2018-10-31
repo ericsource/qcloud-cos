@@ -49,6 +49,7 @@ class Auth
         );
         $data['bucket'] = $this->config['Bucket'];
         $data['region'] = $this->config['Region'];
+        $data['domain'] = $this->config['Domain'];
 
         return $data;
     }

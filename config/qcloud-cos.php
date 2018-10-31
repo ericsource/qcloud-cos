@@ -14,5 +14,7 @@ return [
     'Region' => 'ap-guangzhou',
     // 这里改成允许的路径前缀，这里可以根据自己网站的用户登录态判断允许上传的目录，例子：* 或者 a/* 或者 a.jpg
     'AllowPrefix' => '*',
+    //https://kldlm-xxx.cos.ap-guangzhou.myqcloud.com
+    'Domain' => 'https://kldlm.xxx',
     'Proxy' => '',
 ];
