@@ -1,4 +1,4 @@
 # qcloud cos
 Qcloud Temp Key.
 
-composer require ericsource/qcloud-cos ~1.0
+composer require ericsource/qcloud-cos ~1.2
